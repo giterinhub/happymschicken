@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Happy Ms. Chicken Deluxe</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+  <style>
+    body { margin: 0; overflow: hidden; background-color: black; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; }
+    canvas { border: 1px solid #555; }
+    .controls { padding: 10px; color: white; font-family: sans-serif; font-size: 14px; width: 800px; box-sizing: border-box; }
+    .controls div { margin-bottom: 5px; }
+    .controls label { min-width: 200px; display: inline-block;}
+    .controls input[type="range"] { vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div id="controls-container" class="controls"></div>
+
+  <script>
+    let playerChicken;
+    let otherChickens = [];
+    let eggs = [];
+    
+    let playerScore = 0;
+    let totalEggsLaidEver = 0;
+    // currentChickenCount will be calculated dynamically
+
+    // --- Sound variables ---
+    let introSong;
+    let eggLaySound;
+    let introSongPlayed = false;
+
+    // --- Game Configuration ---
+    let GAME_CONFIG = {
+      chickletGrowTime: 10000, // Default: 10 seconds
+      maxPopulation: 30,       // Default: 30 chickens
+      roosterRatio: 0.4,       // 40% chance of a chicklet being a rooster
+      playerEggCooldown: 300,
+      aiEggCooldownMin: 4000,
+      aiEggCooldownMax: 8000,
+      eggHatchTime: 5000
+    };
+
+    // --- DOM Elements for Sliders ---
+    let growTimeSlider, maxPopulationSlider;
+    let growTimeLabel, maxPopulationLabel;
+
+
+    const CHICKEN_SIZE = 50;
+    const CHICKLET_START_SIZE = 20;
+    const EGG_SIZE = 15;
+
+    const BG_COLOR = [100, 180, 255];
+    const CHICKEN_BODY_COLOR = [255, 255, 0]; // Yellow
+    const CHICKEN_COMB_COLOR = [255, 0, 0];   // Red
+    const ROOSTER_COMB_COLOR = [255, 80, 0]; // More orange-red for roosters
+    const ROOSTER_BODY_COLOR = [160, 82, 45]; // Brownish color for roosters
+    const EGG_COLOR = [250, 240, 200];
+
+    function preload() {
+      soundFormats('mp3', 'wav');
+      try {
+        introSong = loadSound('assets/intro_song.mp3', () => console.log("Intro loaded"), err => console.error("Intro load fail:", err));
+        eggLaySound = loadSound('assets/tuba_sound.mp3', () => console.log("Egg sound loaded"), err => console.error("Egg sound fail:", err));
+      } catch (e) {
+        console.error("Sound loading error in preload:", e);
+      }
+    }
+
+    function setup() {
+      let canvas = createCanvas(800, 500); // Adjusted canvas height for controls
+      canvas.parent('canvas-container');
+
+      playerChicken = new Chicken(width / 2, height / 2, true);
+      
+      setupControls(); // Initialize sliders
+      updateConfigFromSliders(); // Set initial config from slider defaults
+
+      // Attempt to start audio context and play intro song on page load
+      if (getAudioContext().state !== 'running') {
+        userStartAudio().then(() => { 
+            console.log("Audio context started by user gesture (indirectly via setup)");
+            playIntroIfNotPlayed(); 
+        }).catch(e => console.error("Error starting audio context in setup:", e));
+      } else {
+        playIntroIfNotPlayed();
+      }
+    }
+    
+    function setupControls() {
+        let controlsDiv = select('#controls-container');
+
+        // Chicklet Grow Time Slider
+        let growDiv = createDiv('');
+        growTimeLabel = createSpan('Grow Time (s): ' + GAME_CONFIG.chickletGrowTime / 1000);
+        growTimeLabel.parent(growDiv);
+        growTimeSlider = createSlider(3, 20, GAME_CONFIG.chickletGrowTime / 1000, 1); // Min 3s, Max 20s, Step 1s
+        growTimeSlider.parent(growDiv);
+        growDiv.parent(controlsDiv);
+
+        // Max Population Slider
+        let popDiv = createDiv('');
+        maxPopulationLabel = createSpan('Max Chickens: ' + GAME_CONFIG.maxPopulation);
+        maxPopulationLabel.parent(popDiv);
+        maxPopulationSlider = createSlider(5, 100, GAME_CONFIG.maxPopulation, 5); // Min 5, Max 100, Step 5
+        maxPopulationSlider.parent(popDiv);
+        popDiv.parent(controlsDiv);
+    }
+
+    function updateConfigFromSliders() {
+        GAME_CONFIG.chickletGrowTime = growTimeSlider.value() * 1000;
+        GAME_CONFIG.maxPopulation = maxPopulationSlider.value();
+
+        // Update labels
+        growTimeLabel.html('Grow Time (s): ' + growTimeSlider.value());
+        maxPopulationLabel.html('Max Chickens: ' + maxPopulationSlider.value());
+    }
+
+
+    function draw() {
+      background(BG_COLOR);
+      updateConfigFromSliders(); // Continuously update config from sliders
+
+      let currentChickenCount = 1 + otherChickens.length; // Player + others
+
+      playerChicken.updatePlayerPosition(mouseX, mouseY);
+      playerChicken.display();
+      playerChicken.updateCooldown();
+
+      for (let i = otherChickens.length - 1; i >= 0; i--) {
+        let chicken = otherChickens[i];
+        chicken.update();
+        chicken.display();
+        if (chicken.canLayEgg()) {
+          eggs.push(chicken.layEgg());
+          totalEggsLaidEver++;
+          playEggSound();
+        }
+      }
+
+      for (let i = eggs.length - 1; i >= 0; i--) {
+        let egg = eggs[i];
+        egg.update();
+        egg.display();
+        if (egg.isReadyToHatch()) {
+          if (currentChickenCount < GAME_CONFIG.maxPopulation) {
+            let newChick = egg.hatch();
+            otherChickens.push(newChick);
+            // currentChickenCount will update in the next frame's start
+          } else {
+             // Optional: visual cue for egg not hatching due to population
+             // For now, it just won't hatch if pop is full and will be removed.
+          }
+          eggs.splice(i, 1); // Remove egg whether it hatched or not (if "ready")
+        }
+      }
+      
+      displayCounters(currentChickenCount);
+    }
+
+    function displayCounters(chickenCount) {
+      push();
+      fill(255);
+      stroke(0);
+      strokeWeight(2);
+      textAlign(RIGHT, TOP);
+      textSize(30); // Main score a bit smaller to make space
+      text(nf(playerScore, 3), width - 20, 10);
+
+      textSize(20); // Other counters smaller
+      fill(230, 230, 250);
+      stroke(50);
+      text("Chickens: " + chickenCount + "/" + GAME_CONFIG.maxPopulation, width - 20, 50);
+      text("Total Eggs: " + totalEggsLaidEver, width - 20, 75);
+      
+      // Display gender counts (optional)
+      let henCount = otherChickens.filter(c => c.gender === 'hen').length + (playerChicken.gender === 'hen' ? 1 : 0);
+      let roosterCount = otherChickens.filter(c => c.gender === 'rooster').length + (playerChicken.gender === 'rooster' ? 1 : 0);
+      text("Hens: " + henCount, width - 20, 100);
+      text("Roosters: " + roosterCount, width - 20, 125);
+      pop();
+    }
+    
+    function playEggSound() {
+        if (eggLaySound && eggLaySound.isLoaded()) {
+            eggLaySound.play();
+        }
+    }
+    
+    function playIntroIfNotPlayed(){
+        if (introSong && introSong.isLoaded() && !introSongPlayed) {
+            introSong.setVolume(0.3);
+            introSong.play(); // Play the intro song once
+            introSongPlayed = true;
+        }
+    }
+
+    function mousePressed() {
+      if (mouseX > 0 && mouseX < width && mouseY > 0 && mouseY < height) { // Only trigger game actions if click is on canvas
+
+        if (playerChicken.canLayEgg(true)) {
+          eggs.push(playerChicken.layEgg(true));
+          playerScore++;
+          totalEggsLaidEver++;
+          playEggSound();
+        }
+      }
+    }
+    
+    function keyPressed() {
+      if (key === ' ' && playerChicken.canLayEgg(true)) {
+        eggs.push(playerChicken.layEgg(true));
+        playerScore++;
+        totalEggsLaidEver++;
+        playEggSound();
+      }
+    }
+
+    class Chicken {
+      constructor(x, y, isPlayer = false, startAsChicklet = false) {
+        this.x = x;
+        this.y = y;
+        this.isPlayer = isPlayer;
+        this.isChicklet = startAsChicklet;
+        
+        this.gender = isPlayer ? 'hen' : (random() < GAME_CONFIG.roosterRatio ? 'rooster' : 'hen'); // Player is always a hen for now
+
+        this.size = this.isChicklet ? CHICKLET_START_SIZE : CHICKEN_SIZE;
+        this.targetSize = CHICKEN_SIZE;
+        this.creationTime = millis();
+
+        this.lastEggLayTime = 0;
+        this.eggLayCooldown = this.isPlayer ? GAME_CONFIG.playerEggCooldown : random(GAME_CONFIG.aiEggCooldownMin, GAME_CONFIG.aiEggCooldownMax);
+        
+        this.angle = random(TWO_PI);
+        this.speed = random(0.5, 1.5);
+        this.nextTurnTime = 0;
+      }
+
+      updatePlayerPosition(mx, my) {
+        if (this.isPlayer) {
+          this.x = constrain(mx, this.size / 2, width - this.size / 2);
+          this.y = constrain(my, this.size / 2, height - this.size / 2);
+        }
+      }
+
+      updateCooldown() {}
+
+      update() {
+        if (this.isChicklet) {
+          let growthProgress = (millis() - this.creationTime) / GAME_CONFIG.chickletGrowTime;
+          this.size = lerp(CHICKLET_START_SIZE, this.targetSize, min(growthProgress, 1));
+          if (growthProgress >= 1) {
+            this.isChicklet = false;
+            if (!this.isPlayer && this.gender === 'hen') { // Only reset cooldown for AI hens
+                 this.eggLayCooldown = random(GAME_CONFIG.aiEggCooldownMin, GAME_CONFIG.aiEggCooldownMax);
+                 this.lastEggLayTime = millis(); 
+            }
+          }
+        }
+
+        if (!this.isPlayer) {
+          if (millis() > this.nextTurnTime) {
+            this.angle += random(-PI / 4, PI / 4);
+            this.speed = random(0.5, 1.5);
+            this.nextTurnTime = millis() + random(1000, 3000);
+          }
+          this.x += cos(this.angle) * this.speed;
+          this.y += sin(this.angle) * this.speed;
+
+          if (this.x < this.size / 2 || this.x > width - this.size / 2) {
+            this.angle = PI - this.angle; this.x = constrain(this.x, this.size / 2, width - this.size / 2);
+          }
+          if (this.y < this.size / 2 || this.y > height - this.size / 2) {
+            this.angle = -this.angle; this.y = constrain(this.y, this.size / 2, height - this.size / 2);
+          }
+        }
+      }
+
+      canLayEgg(isTriggeredByPlayer = false) {
+        if (this.isChicklet || this.gender === 'rooster') return false;
+
+        if (isTriggeredByPlayer && this.isPlayer) {
+          return millis() - this.lastEggLayTime > this.eggLayCooldown;
+        } else if (!this.isPlayer) { // AI Hen
+          return millis() - this.lastEggLayTime > this.eggLayCooldown;
+        }
+        return false;
+      }
+
+      layEgg(isTriggeredByPlayer = false) {
+        this.lastEggLayTime = millis();
+        if (!this.isPlayer) {
+             this.eggLayCooldown = random(GAME_CONFIG.aiEggCooldownMin, GAME_CONFIG.aiEggCooldownMax);
+        }
+        return new Egg(this.x, this.y + this.size * 0.3);
+      }
+
+      display() {
+        push();
+        translate(this.x, this.y);
+        stroke(0);
+        strokeWeight(this.size * 0.06);
+        line(-this.size * 0.15, this.size * 0.3, -this.size * 0.25, this.size * 0.5); // Left leg
+        line(this.size * 0.15, this.size * 0.3, this.size * 0.25, this.size * 0.5); // Right leg
+        
+        if (this.gender === 'rooster' && !this.isChicklet) {
+            fill(ROOSTER_BODY_COLOR);
+        } else {
+            fill(CHICKEN_BODY_COLOR);
+        }
+        noStroke();
+        ellipse(0, 0, this.size, this.size * 0.8); // Main body
+        ellipse(this.size * 0.3, -this.size * 0.3, this.size * 0.5, this.size * 0.5); // Head
+        
+        // Comb & Wattle
+        if (this.gender === 'rooster' && !this.isChicklet) {
+            fill(ROOSTER_COMB_COLOR);
+            // Larger, more prominent comb for rooster
+            beginShape();
+            vertex(this.size * 0.2, -this.size * 0.5);
+            bezierVertex(this.size * 0.2, -this.size * 0.7, this.size * 0.4, -this.size * 0.75, this.size * 0.45, -this.size * 0.6);
+            bezierVertex(this.size * 0.5, -this.size * 0.7, this.size * 0.5, -this.size * 0.4, this.size * 0.35, -this.size * 0.45);
+            endShape(CLOSE);
+
+            // Wattle for rooster
+            fill(ROOSTER_COMB_COLOR); // Same color as comb
+            ellipse(this.size * 0.45, -this.size * 0.1, this.size * 0.15, this.size * 0.25); // Under the beak
+            ellipse(this.size * 0.55, -this.size * 0.08, this.size * 0.15, this.size * 0.22); // Slightly to the side
+
+        } else if (this.gender === 'hen' && !this.isChicklet) { // Hens have a smaller comb
+            fill(CHICKEN_COMB_COLOR);
+            ellipse(this.size * 0.3, -this.size * 0.55, this.size * 0.25, this.size * 0.3);
+        }
+        // Chicklets don't have combs or wattles yet
+
+        // Beak
+        fill(255, 165, 0); // Orange
+        triangle(this.size * 0.5, -this.size * 0.3, this.size * 0.65, -this.size * 0.25, this.size * 0.5, -this.size * 0.2);
+        
+        // Eye
+        fill(0); // Black
+        ellipse(this.size * 0.4, -this.size * 0.35, this.size * 0.1, this.size * 0.1);
+        
+        // Tail for Rooster (optional, can be expanded)
+        if (this.gender === 'rooster' && !this.isChicklet) {
+            fill(ROOSTER_BODY_COLOR[0]*0.8, ROOSTER_BODY_COLOR[1]*0.8, ROOSTER_BODY_COLOR[2]*0.8); // Darker shade of body
+            push();
+            translate(-this.size * 0.4, this.size * 0.1); // Position tail
+            rotate(-PI/6);
+            arc(0, 0, this.size * 0.8, this.size * 0.7, PI, TWO_PI - PI/4, CHORD);
+            rotate(PI/12);
+            arc(0, -this.size*0.1, this.size * 0.9, this.size * 0.8, PI, TWO_PI - PI/3, CHORD);
+            pop();
+        }
+
+        pop();
+      }
+    }
+
+    class Egg {
+      constructor(x, y) { // removed laidByPlayer as it's not used
+        this.x = x;
+        this.y = y;
+        this.creationTime = millis();
+        this.size = EGG_SIZE;
+        this.hatchProgress = 0; 
+        this.isCracked = false;
+      }
+
+      update() {
+        this.hatchProgress = (millis() - this.creationTime) / GAME_CONFIG.eggHatchTime;
+        if (this.hatchProgress > 0.8 && !this.isCracked) {
+            this.isCracked = true; 
+        }
+      }
+
+      isReadyToHatch() {
+        return this.hatchProgress >= 1;
+      }
+
+      hatch() {
+        // Gender is determined in Chicken constructor
+        return new Chicken(this.x, this.y, false, true); 
+      }
+
+      display() {
+        push();
+        translate(this.x, this.y);
+        fill(EGG_COLOR);
+        noStroke();
+        ellipse(0, 0, this.size, this.size * 1.3); 
+
+        if (this.isCracked) {
+            stroke(150, 120, 90); 
+            strokeWeight(1);
+            line(-this.size * 0.2, -this.size * 0.3, this.size * 0.1, this.size * 0.2);
+            line(this.size * 0.1, -this.size * 0.2, -this.size * 0.1, this.size * 0.3);
+        }
+        pop();
+      }
+    }
+  </script>
+</body>
+</html>
